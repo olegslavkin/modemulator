@@ -72,3 +72,4 @@ flycheck_*.el
 # Go workspace file
 go.work
 
+modemulator
