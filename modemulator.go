@@ -7,7 +7,7 @@ package main
 import (
 	"bytes"
 	"errors"
-	"fmt"
+	//	"fmt"
 	log "github.com/sirupsen/logrus"
 	"io"
 	"net"
@@ -45,7 +45,7 @@ var BAUDS []uint = []uint{
 
 var AddressBook map[string]string = map[string]string{
 	"54311": "shell.fr-par1.burble.dn42:23",
-	"42":    "localhost:23",
+	"4242":  "localhost:23",
 }
 
 var OnlyNumbers *regexp.Regexp = regexp.MustCompile("([^0-9]+)")
@@ -85,6 +85,7 @@ const (
 	DTE_ATTN_1
 	DTE_ATTN_2
 	DTE_ATTN_3
+	DTE_IAC
 	DTE_CONNECTED
 )
 
@@ -219,37 +220,44 @@ func (m *Modem) dteWrite(data []byte) {
 
 func (m *Modem) dceWrite(data []byte) {
 
+	// check I'm actually connected
+	if !m.connected {
+		return
+	}
+
 	// step through the data in chunks
-	csize := int(m.bytesPerTimeslot())
+	max := int(m.bytesPerTimeslot())
+
 	for scan := 0; scan < len(data); {
 
-		// wait if necessary until we can send
-		now := time.Now()
-		if m.writeSlot.After(now) {
-			wtime := m.writeSlot.Sub(now)
-			fmt.Printf("waiting %d for write slot\n", wtime)
-			time.Sleep(wtime)
-		}
-
-		// send the data
-		end := scan + csize
+		// figure out what to send
+		end := scan + max
 		if end > len(data) {
 			end = len(data)
 		}
 		chunk := data[scan:end]
+
+		// wait if necessary until the write timeslot
+		now := time.Now()
+		if m.writeSlot.After(now) {
+			wtime := m.writeSlot.Sub(now)
+			time.Sleep(wtime)
+		}
+
+		// send the data
 		if _, err := m.dce.Write(chunk); err != nil {
 			m.disconnect()
 			m.noCarrier()
 			return
 		}
-		scan += len(chunk)
 
 		// set the next available timeslot
 		tlen := time.Duration((9 * 1000 * 1000 * 1000 * len(chunk)) / int(m.baud))
-		fmt.Printf("%d chars, next write slot in %d\n", len(chunk), tlen)
 		m.writeSlot = now.Add(tlen)
-	}
 
+		// and move on
+		scan += len(chunk)
+	}
 }
 
 func (m *Modem) tnWrite(codes []TCode) {
@@ -279,7 +287,7 @@ func (m *Modem) connect(dial string) error {
 		return errors.New("Address not found:" + dial)
 	}
 
-	conn, err := net.Dial("tcp", endpoint)
+	conn, err := net.Dial("tcp6", endpoint)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"error": err,
@@ -450,11 +458,17 @@ func (m *Modem) DTEReceive(baud uint, dte net.Conn) {
 			case DTE_CONNECTED:
 				// stream to DCE
 
+				// look ahead for control codes
 				start := scan
+			SCAN:
 				for ; scan < available; scan++ {
-					if m.dteBuff[scan] == '+' {
+					switch m.dteBuff[scan] {
+					case '+':
 						m.mode = DTE_ATTN_1
-						break
+						break SCAN
+					case byte(TN_IAC):
+						m.mode = DTE_IAC
+						break SCAN
 					}
 				}
 
@@ -463,9 +477,15 @@ func (m *Modem) DTEReceive(baud uint, dte net.Conn) {
 				m.dceWrite(data)
 
 				if scan < available {
-					// + was received, skip over it
+					// + or TN_IAC was received, skip over it
 					scan++
 				}
+
+			case DTE_IAC:
+				// escape TN_IAC, _don't_ move scan as it
+				// has already been done in DTE_CONNECTED
+				m.dceWrite([]byte{byte(TN_IAC), byte(TN_IAC)})
+				m.mode = DTE_CONNECTED
 
 			case DTE_ATTN_1:
 				if m.dteBuff[scan] == '+' {
@@ -479,7 +499,6 @@ func (m *Modem) DTEReceive(baud uint, dte net.Conn) {
 
 			case DTE_ATTN_2:
 				if m.dteBuff[scan] == '+' {
-
 					scan++
 					if scan < available {
 						// more bytes were available, no hangup
@@ -625,7 +644,6 @@ func (m *Modem) dceTelnet() {
 		now := time.Now()
 		if m.readSlot.After(now) {
 			rtime := m.readSlot.Sub(now)
-			fmt.Printf("waiting %d for read slot\n", rtime)
 			time.Sleep(rtime)
 		}
 
@@ -634,7 +652,6 @@ func (m *Modem) dceTelnet() {
 
 		// set the next available timeslot
 		tlen := time.Duration((9 * 1000 * 1000 * 1000 * len(m.dceBuff)) / int(m.baud))
-		fmt.Printf("%d chars, next read slot in %d\n", len(m.dceBuff), tlen)
 		m.readSlot = now.Add(tlen)
 
 		if err != nil {
@@ -682,8 +699,9 @@ func (m *Modem) dceTelnet() {
 
 				switch code {
 				case TN_IAC:
-					// actually send 255
+					// actually send 255 and reset
 					m.dte.Write([]byte{byte(TN_IAC)})
+					m.state = TN_NORM
 				case TN_WILL:
 					m.state = TN_WILL
 				case TN_WONT:
@@ -742,6 +760,9 @@ func (m *Modem) dceTelnet() {
 				switch code {
 				case 0:
 					// ignore binary confirmation
+				case 1:
+					// won't echo
+					m.tnWrite([]TCode{TN_IAC, TN_WONT, code, TN_IAC, TN_DO, code})
 				case 3:
 					// ignore GA confirmation
 				default:
