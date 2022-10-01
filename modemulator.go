@@ -528,7 +528,7 @@ func (m *Modem) atCmd(cmd string) {
 
 	// cope with zero length commands
 	if l == 0 {
-		m.cmdError()
+		m.cmdOK()
 		return
 	}
 
@@ -804,7 +804,7 @@ func (m *Modem) dceTelnet() {
 
 func main() {
 
-	log.SetLevel(log.DebugLevel)
+	log.SetLevel(log.InfoLevel)
 	log.Info("modemulator starting")
 
 	// startup

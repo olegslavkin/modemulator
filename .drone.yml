@@ -1,0 +1,41 @@
+---
+kind: pipeline
+type: docker
+name: default
+
+steps:
+ - name: build
+   image: golang
+   environment:
+     CGO_ENABLED: 0
+   commands:
+    - go vet
+    - go build
+
+ - name: upload
+   image: plugins/s3
+   settings:
+     bucket: artifacts
+     access_key:
+       from_secret: MINIO_ACCESS_KEY
+     secret_key:
+       from_secret: MINIO_SECRET_KEY
+     endpoint: https://minio.burble.dn42
+     region: fr-par1
+     path_style: true
+     source: modemulator
+     target: /modemulator/${DRONE_BRANCH}
+
+---
+kind: secret
+name: MINIO_ACCESS_KEY
+get:
+  path: burble.dn42/kv/data/drone/minio
+  name: ACCESS_KEY
+
+---
+kind: secret
+name: MINIO_SECRET_KEY
+get:
+  path: burble.dn42/kv/data/drone/minio
+  name: SECRET_KEY
